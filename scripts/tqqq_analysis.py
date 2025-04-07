@@ -4,8 +4,60 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import os
+import logging
+import traceback
+import time
+
 from utils.telegram_service import send_telegram_message, send_telegram_image
 from config.config import TQQQ_EXECUTION_TIME
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+
+# 파일 핸들러
+file_handler = logging.FileHandler('tqqq_analysis.log')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+
+# 콘솔 핸들러
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+def safe_data_fetch(ticker, period="1y", interval="1d", retries=3, delay=2):
+    """
+    yfinance에서 안전하게 데이터를 가져오는 함수
+    
+    Args:
+        ticker (str): 주식 티커 심볼
+        period (str): 데이터 기간
+        interval (str): 데이터 간격
+        retries (int): 재시도 횟수
+        delay (int): 재시도 간 대기 시간(초)
+        
+    Returns:
+        DataFrame: 주식 데이터 또는 None
+    """
+    for attempt in range(retries):
+        try:
+            stock_data = yf.Ticker(ticker)
+            df = stock_data.history(period=period, interval=interval)
+            if df.empty:
+                logger.warning(f"{ticker} 데이터가 비어 있습니다. 재시도 중... ({attempt+1}/{retries})")
+                continue
+            return df
+        except Exception as e:
+            if attempt < retries - 1:
+                logger.warning(f"{ticker} 데이터 가져오기 실패: {str(e)}. 재시도 중... ({attempt+1}/{retries})")
+                time.sleep(delay)
+            else:
+                logger.error(f"{ticker} 데이터 가져오기 최종 실패: {str(e)}")
+                return None
 
 def get_tqqq_data():
     """
@@ -19,12 +71,12 @@ def get_tqqq_data():
         hist = tqqq.history(period="1y")  # 최근 1년 데이터
         
         if hist.empty:
-            print("TQQQ 데이터를 가져오는데 실패했습니다.")
+            logger.error("TQQQ 데이터를 가져오는데 실패했습니다.")
             return None
-        
+            
         return hist
     except Exception as e:
-        print(f"TQQQ 데이터 조회 오류: {e}")
+        logger.error(f"TQQQ 데이터 조회 오류: {e}")
         return None
 
 def analyze_tqqq():
@@ -64,14 +116,15 @@ def analyze_tqqq():
         recommendation = "SPLG"  # 엔벨로프 위
     
     # 결과 차트 생성
-    generate_tqqq_chart(tqqq_data)
+    chart_path = generate_tqqq_chart(tqqq_data)
     
     return {
         "close_price": close_price,
         "ma200": ma200,
         "envelope": envelope,
         "diff": close_price - ma200,
-        "recommendation": recommendation
+        "recommendation": recommendation,
+        "chart_path": chart_path
     }
 
 def generate_tqqq_chart(tqqq_data):
@@ -89,22 +142,35 @@ def generate_tqqq_chart(tqqq_data):
         plt.plot(tqqq_data.index[-100:], tqqq_data['MA200'][-100:], label='200일 이동평균', color='red')
         plt.plot(tqqq_data.index[-100:], tqqq_data['Envelope'][-100:], label='엔벨로프 (MA200 + 10%)', color='green', linestyle='--')
         
-        plt.title('TQQQ 200일 이동평균 및 10% 엔벨로프')
+        # 현재 날짜 추가
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        plt.title(f'TQQQ 200일 이동평균 및 10% 엔벨로프 ({current_date})')
         plt.xlabel('날짜')
         plt.ylabel('가격 ($)')
         plt.legend()
         plt.grid(True)
         
+        # 수치 텍스트로 표시
+        latest = tqqq_data.iloc[-1]
+        close_price = latest['Close']
+        ma200 = latest['MA200']
+        envelope = latest['Envelope']
+        
+        plt.figtext(0.02, 0.95, f'종가: ${close_price:.2f}', fontsize=9)
+        plt.figtext(0.02, 0.92, f'200일선: ${ma200:.2f}', fontsize=9)
+        plt.figtext(0.02, 0.89, f'엔벨로프: ${envelope:.2f}', fontsize=9)
+        
         # 차트 저장
         chart_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
         os.makedirs(chart_dir, exist_ok=True)
-        chart_path = os.path.join(chart_dir, 'tqqq_chart.png')
+        chart_path = os.path.join(chart_dir, f'tqqq_chart_{current_date}.png')
         plt.savefig(chart_path)
         plt.close()
         
+        logger.info(f"TQQQ 차트 생성 완료: {chart_path}")
         return chart_path
     except Exception as e:
-        print(f"차트 생성 오류: {e}")
+        logger.error(f"차트 생성 오류: {e}")
         return None
 
 def format_tqqq_message(result):
@@ -120,20 +186,30 @@ def format_tqqq_message(result):
     if result is None:
         return "TQQQ 데이터를 가져오는데 실패했습니다."
     
-    message = "TQQQ 200일선 차트\n"
-    message += f"TQQQ 종가: {result['close_price']:.2f}\n"
-    message += f"200일선: {result['ma200']:.2f}\n"
-    message += f"10%엔벨로프선: {result['envelope']:.2f}\n"
-    message += f"차이: {result['diff']:.2f}\n"
-    message += f"결과 - {result['recommendation']} 구매 추천"
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    message = f"📊 *TQQQ 200일선 분석* 📊\n({current_date})\n\n"
+    message += f"TQQQ 종가: ${result['close_price']:.2f}\n"
+    message += f"200일선: ${result['ma200']:.2f}\n"
+    message += f"10%엔벨로프선: ${result['envelope']:.2f}\n"
+    message += f"차이: ${result['diff']:.2f} ({(result['diff']/result['ma200']*100):.2f}%)\n\n"
+    
+    if result['recommendation'] == "SGOV":
+        message += "⚠️ *현재 상태*: 200일선 아래\n"
+        message += "💡 *추천*: SGOV (단기 국채 ETF) 구매"
+    elif result['recommendation'] == "TQQQ":
+        message += "✅ *현재 상태*: 200일선 위, 엔벨로프 아래\n"
+        message += "💡 *추천*: TQQQ (3배 나스닥 ETF) 구매"
+    else:
+        message += "🔥 *현재 상태*: 엔벨로프 위\n"
+        message += "💡 *추천*: SPLG (S&P 500 ETF) 구매"
     
     return message
 
 def send_tqqq_alert():
     """TQQQ 알림 전송"""
     try:
-        print("TQQQ 분석 시작...")
-        
+        logger.info("TQQQ 분석 시작...")
+    
         # TQQQ 분석
         result = analyze_tqqq()
         
@@ -146,20 +222,20 @@ def send_tqqq_alert():
         message = format_tqqq_message(result)
         
         # 텔레그램으로 차트 이미지 전송
-        chart_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 
-            'data', 
-            'tqqq_chart.png'
-        )
+        chart_path = result.get('chart_path')
         
-        if os.path.exists(chart_path):
+        if chart_path and os.path.exists(chart_path):
             send_telegram_image(chart_path, caption=message)
+            logger.info(f"TQQQ 차트 및 메시지 전송 완료: {chart_path}")
         else:
             send_telegram_message(message)
+            logger.info("TQQQ 메시지만 전송 완료 (차트 없음)")
         
-        print("TQQQ 알림 전송 완료")
+        logger.info("TQQQ 알림 전송 완료")
     except Exception as e:
-        print(f"TQQQ 알림 오류: {e}")
+        error_traceback = traceback.format_exc()
+        logger.error(f"TQQQ 알림 오류: {str(e)}\n{error_traceback}")
+        send_telegram_message(f"TQQQ 알림 오류: {str(e)}")
 
 def should_run():
     """실행 시간 확인"""
@@ -183,5 +259,4 @@ def main():
         time.sleep(30)  # 30초마다 확인
 
 if __name__ == "__main__":
-    import time
     main() 
