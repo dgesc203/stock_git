@@ -54,6 +54,17 @@ def safe_stock_api_call(func, *args, retries=5, delay=3, **kwargs):
     """
     for attempt in range(retries):
         try:
+            # 함수별 타임아웃 조정
+            if func.__name__ == 'get_market_ticker_list':
+                # 주식 목록 가져오기는 시간이 더 오래 걸릴 수 있음
+                timeout = 30  # 30초 타임아웃
+            else:
+                timeout = 15  # 기본 15초 타임아웃
+                
+            # 실행 가능한 경우에만 timeout 적용(일부 함수는 지원하지 않을 수 있음)
+            if 'timeout' in kwargs:
+                kwargs['timeout'] = timeout
+                
             result = func(*args, **kwargs)
             # 결과 유효성 검사
             if result is not None:
@@ -158,6 +169,8 @@ def check_institutional_buying(code, start_date, end_date, window=20):
 
 def process_stock(stock_info):
     """종목 데이터 분석"""
+    global start_date, end_date
+    
     try:
         code, market_cap = stock_info
         
@@ -378,26 +391,58 @@ def run_analysis():
             send_telegram_message(f"급등주 분석 중 오류 발생: {error_msg}", is_kospi=True)
             return [], []
             
-        all_stocks = safe_stock_api_call(stock.get_market_ticker_list, date=end_date_str)
+        # GitHub Actions 실행 환경에서 더 오래 기다리기
+        logger.info("KRX 서버 연결을 위해 잠시 대기...")
+        time.sleep(10)  # 10초 대기 후 시작
+            
+        # 주식 목록 가져오기 - 최대 10회 재시도
+        all_stocks = None
+        max_retries = 10
         
-        if not all_stocks:
+        for attempt in range(max_retries):
+            logger.info(f"주식 목록 가져오기 시도 중... ({attempt+1}/{max_retries})")
+            all_stocks = safe_stock_api_call(stock.get_market_ticker_list, date=end_date_str)
+            
+            if all_stocks and len(all_stocks) > 100:  # 정상적으로 100개 이상의 종목이 있어야 함
+                logger.info(f"주식 목록 가져오기 성공: {len(all_stocks)}개 종목")
+                break
+                
+            logger.warning(f"주식 목록이 비어있거나 부족합니다. 재시도 중... ({attempt+1}/{max_retries})")
+            time.sleep(10)  # 10초 대기 후 재시도 (KRX 서버 부하 고려)
+        
+        if not all_stocks or len(all_stocks) < 100:
             error_msg = "주식 목록을 가져오는 데 실패했습니다."
             logger.error(error_msg)
             send_telegram_message(f"급등주 분석 중 오류 발생: {error_msg}", is_kospi=True)
             return [], []
 
-        # 우선주 및 스팩주 제외
+        # 우선주 및 스팩주 제외 - 로깅 추가
         filtered_stocks = []
-        for code in all_stocks:
-            name = safe_stock_api_call(stock.get_market_ticker_name, code)
-            if name and not code.endswith(('5', '7', '9')) and '우' not in name and '스팩' not in name and not code.startswith('43'):
-                filtered_stocks.append(code)
+        logger.info("우선주 및 스팩주 필터링 중...")
+        
+        # 종목 수가 많은 경우 진행 상황 표시
+        for i, code in enumerate(all_stocks):
+            if i % 100 == 0:
+                logger.info(f"종목 필터링 진행 중... ({i}/{len(all_stocks)})")
+                
+            try:
+                name = safe_stock_api_call(stock.get_market_ticker_name, code)
+                if name and not code.endswith(('5', '7', '9')) and '우' not in name and '스팩' not in name and not code.startswith('43'):
+                    filtered_stocks.append(code)
+            except Exception as e:
+                logger.warning(f"종목명 가져오기 실패 ({code}): {str(e)}")
+                continue
 
         logger.info(f"종목 필터링 완료: {len(filtered_stocks)}개 종목 (우선주 및 스팩주 제외)")
         
-        # 시가총액 가져오기
+        # 시가총액 가져오기 - 진행 상황 로깅 추가
         marcap_dict = {}
-        for code in filtered_stocks:
+        logger.info("시가총액 데이터 수집 중...")
+        
+        for i, code in enumerate(filtered_stocks):
+            if i % 100 == 0:
+                logger.info(f"시가총액 데이터 수집 중... ({i}/{len(filtered_stocks)})")
+                
             try:
                 marcap = safe_stock_api_call(
                     stock.get_market_cap_by_date, 
@@ -410,6 +455,10 @@ def run_analysis():
                     marcap_dict[code] = marcap['시가총액'].iloc[-1]
             except Exception as e:
                 logger.error(f"시가총액 가져오기 실패 ({code}): {str(e)}")
+                
+            # 너무 빠르게 요청하지 않도록 약간의 딜레이 추가
+            if i % 20 == 0:
+                time.sleep(1)  # 20개 종목마다 1초 대기
 
         small_caps = [(code, marcap_dict.get(code, 0)) for code in filtered_stocks]
         logger.info(f"분석 대상 종목: {len(small_caps)}개")
