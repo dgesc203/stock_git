@@ -2,12 +2,12 @@ name: Stock Alert Scheduler
 
 on:
   schedule:
-    # 매일 오전 9시 (UTC 0:00)에 TQQQ 알림 실행
+    # 매일 평일 아침 9시 (UTC 0:00)에 TQQQ 알림 실행
     - cron: '0 0 * * 1-5'
-    # 매일 오후 5시 8분 (UTC 8:08)에 주식 분석 실행
-    - cron: '8 8 * * 1-5'
-    # 테스트용: 오늘 오후 9시 10분에 실행 (UTC 12:10)
-    - cron: '10 12 * * *'
+    # 매일 평일 저녁 5시 (UTC 8:00)에 코스피 검색기 실행
+    - cron: '0 8 * * 1-5'
+    # 테스트용: 오늘 저녁 9시 20분에 코스피 검색기만 실행 (UTC 12:20)
+    - cron: '20 12 * * *'
   workflow_dispatch:  # 수동 실행 옵션
 
 jobs:
@@ -43,21 +43,32 @@ jobs:
           echo "KOSPI_TELEGRAM_BOT_TOKEN=$KOSPI_TELEGRAM_BOT_TOKEN" >> $GITHUB_ENV
           echo "KOSPI_TELEGRAM_CHAT_ID=$KOSPI_TELEGRAM_CHAT_ID" >> $GITHUB_ENV
 
-      - name: Run TQQQ alerts (only at 9:00 AM KST)
-        if: github.event.schedule != '8 8 * * 1-5' && github.event.schedule != '10 12 * * *'
+      # TQQQ 알림 (아침 9시)
+      - name: Run TQQQ alerts (UTC 0:00, KST 9:00)
+        if: github.event.schedule == '0 0 * * 1-5'
         run: |
           cd telebot
           python -m main --run tqqq
 
-      - name: Run stock analysis (only at 5:08 PM KST)
-        if: github.event.schedule != '0 0 * * 1-5' && github.event.schedule != '10 12 * * *'
+      # 코스피/코스닥 검색기 (저녁 5시)
+      - name: Run KOSPI Stock Scanner (UTC 8:00, KST 17:00)
+        if: github.event.schedule == '0 8 * * 1-5'
         run: |
           cd telebot
           python -m main --run potential
           python -m main --run wave
 
-      - name: Test run (at 9:10 PM KST)
-        if: github.event.schedule == '10 12 * * *' || github.event_name == 'workflow_dispatch'
+      # 테스트용 - 오늘 저녁 9시 20분에 코스피 검색기만 실행
+      - name: Test KOSPI Scanner Only (UTC 12:20, KST 21:20)
+        if: github.event.schedule == '20 12 * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd telebot
+          python -m main --run potential
+          python -m main --run wave
+
+      # 수동 실행 시 모든 기능 테스트
+      - name: Run All Functions (Manual Trigger Only)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           cd telebot
           python -m main --run all 
