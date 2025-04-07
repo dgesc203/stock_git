@@ -1,0 +1,63 @@
+name: Stock Alert Scheduler
+
+on:
+  schedule:
+    # 매일 오전 9시 (UTC 0:00)에 TQQQ 알림 실행
+    - cron: '0 0 * * 1-5'
+    # 매일 오후 5시 8분 (UTC 8:08)에 주식 분석 실행
+    - cron: '8 8 * * 1-5'
+    # 테스트용: 오늘 오후 9시 10분에 실행 (UTC 12:10)
+    - cron: '10 12 * * *'
+  workflow_dispatch:  # 수동 실행 옵션
+
+jobs:
+  run_alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r telebot/requirements.txt
+
+      - name: Set environment variables
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KOSPI_TELEGRAM_BOT_TOKEN: ${{ secrets.KOSPI_TELEGRAM_BOT_TOKEN }}
+          KOSPI_TELEGRAM_CHAT_ID: ${{ secrets.KOSPI_TELEGRAM_CHAT_ID }}
+        run: |
+          echo "SUPABASE_URL=$SUPABASE_URL" >> $GITHUB_ENV
+          echo "SUPABASE_KEY=$SUPABASE_KEY" >> $GITHUB_ENV
+          echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" >> $GITHUB_ENV
+          echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> $GITHUB_ENV
+          echo "KOSPI_TELEGRAM_BOT_TOKEN=$KOSPI_TELEGRAM_BOT_TOKEN" >> $GITHUB_ENV
+          echo "KOSPI_TELEGRAM_CHAT_ID=$KOSPI_TELEGRAM_CHAT_ID" >> $GITHUB_ENV
+
+      - name: Run TQQQ alerts (only at 9:00 AM KST)
+        if: github.event.schedule != '8 8 * * 1-5' && github.event.schedule != '10 12 * * *'
+        run: |
+          cd telebot
+          python -m main --run tqqq
+
+      - name: Run stock analysis (only at 5:08 PM KST)
+        if: github.event.schedule != '0 0 * * 1-5' && github.event.schedule != '10 12 * * *'
+        run: |
+          cd telebot
+          python -m main --run potential
+          python -m main --run wave
+
+      - name: Test run (at 9:10 PM KST)
+        if: github.event.schedule == '10 12 * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd telebot
+          python -m main --run all 

@@ -1,0 +1,34 @@
+# Python 캐시 파일
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상 환경
+venv/
+env/
+ENV/
+
+# .env 파일 (민감한 정보 포함)
+.env
+
+# 로그 파일
+*.log
+logs/
+
+# 데이터 파일
+data/*.png
+data/*.csv
+data/*.json
+
+# 시스템 파일
+.DS_Store
+Thumbs.db
+
+# 다른 설정 파일
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 디버그 파일
+debug/ 
